@@ -2,11 +2,11 @@
 #include <opencv2/opencv.hpp>
 #include <complex>
 #include <iostream>
+#include <chrono>
 
 const int WIDTH = 800;
 const int HEIGHT = 800;
 const int MAX_ITER = 1000;
-
 
 int mandelbrot(const std::complex<double>& c) {
     std::complex<double> z = 0;
@@ -18,15 +18,29 @@ int mandelbrot(const std::complex<double>& c) {
     return iter;
 }
 
-
 cv::Vec3b getColor(int iter) {
     if (iter == MAX_ITER) {
-        return { 0, 0, 0 }; 
+        return { 0, 0, 0 };
     }
     int r = 9 * (255 - iter * 255 / MAX_ITER);
     int g = 15 * (255 - iter * 255 / MAX_ITER);
     int b = 8 * (255 - iter * 255 / MAX_ITER);
-    return cv::Vec3b(b % 256, g % 256, r % 256); 
+    return cv::Vec3b(b % 256, g % 256, r % 256);
+}
+
+void computeSequential(cv::Mat& image) {
+    double xmin = -2.0, xmax = 1.0;
+    double ymin = -1.5, ymax = 1.5;
+
+    for (int y = 0; y < HEIGHT; ++y) {
+        for (int x = 0; x < WIDTH; ++x) {
+            double real = xmin + (x / static_cast<double>(WIDTH)) * (xmax - xmin);
+            double imag = ymin + (y / static_cast<double>(HEIGHT)) * (ymax - ymin);
+            std::complex<double> c(real, imag);
+            int iter = mandelbrot(c);
+            image.at<cv::Vec3b>(y, x) = getColor(iter);
+        }
+    }
 }
 
 int main(int argc, char** argv) {
@@ -35,6 +49,28 @@ int main(int argc, char** argv) {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
+    std::cout << "Hello from process " << rank << " of " << size << std::endl;
+
+    if (rank == 0) {
+        
+        cv::Mat seq_image(HEIGHT, WIDTH, CV_8UC3);
+        auto start_seq = std::chrono::high_resolution_clock::now();
+
+        computeSequential(seq_image);
+
+        auto end_seq = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> duration_seq = end_seq - start_seq;
+        std::cout << "[Sequential] Time: " << duration_seq.count() << " sec" << std::endl;
+
+        
+        //cv::imshow("Sequential Mandelbrot", seq_image);
+        //cv::waitKey(1); 
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD); 
+
+    
+    auto start_par = std::chrono::high_resolution_clock::now();
 
     int rows_per_proc = HEIGHT / size;
     int extra_rows = HEIGHT % size;
@@ -52,7 +88,6 @@ int main(int argc, char** argv) {
             double imag = ymin + ((start_row + y) / static_cast<double>(HEIGHT)) * (ymax - ymin);
             std::complex<double> c(real, imag);
             int iter = mandelbrot(c);
-
             local_image.at<cv::Vec3b>(y, x) = getColor(iter);
         }
     }
@@ -80,9 +115,13 @@ int main(int argc, char** argv) {
         full_image.data, recvcounts, displs, MPI_UNSIGNED_CHAR,
         0, MPI_COMM_WORLD);
 
+    auto end_par = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> duration_par = end_par - start_par;
+
     if (rank == 0) {
-        cv::imshow("Mandelbrot Set", full_image);
-        cv::waitKey(0); 
+        std::cout << "[Parallel (MPI)] Time: " << duration_par.count() << " sec" << std::endl;
+        cv::imshow("Parallel Mandelbrot", full_image);
+        cv::waitKey(0);
         delete[] recvcounts;
         delete[] displs;
     }
